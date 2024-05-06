@@ -31,6 +31,7 @@ parser.add_argument('--hidden', default=512, type=int, help="Number of dimension
 parser.add_argument('--word-vectors', help="File containing word embeddings.")
 parser.add_argument('--layers', default=2, type=int, help="Number of hidden layers in the model")
 parser.add_argument('--nonlin', choices=["tanh", "cube", "logistic", "relu", "elu", "selu", "softsign", "swish", "linear"], default='softsign', help="Non-linearity type.")
+parser.add_argument('--model_type', choices=["feedforward", "transformer"], default='feedforward', help="Model type.")
 
 # Inference arguments
 parser.add_argument('--max-dist', default=101, type=int, help="Maximum number of messages to consider when forming a link (count includes the current message).")
@@ -452,10 +453,16 @@ class PyTorchModel(nn.Module):
 
         # Create hidden layers
         self.hidden = []
-        self.hidden.append(nn.Linear(input_size, HIDDEN, device=DEVICE))
-        for i in range(args.layers - 1):
-            self.hidden.append(nn.Linear(HIDDEN, HIDDEN, device=DEVICE))
-        self.final_sum = nn.Linear(HIDDEN, 1, device=DEVICE)
+        if args.model_type == "feedforward":
+            self.hidden.append(nn.Linear(input_size, HIDDEN, device=DEVICE))
+            for i in range(args.layers - 1):
+                self.hidden.append(nn.Linear(HIDDEN, HIDDEN, device=DEVICE))
+            self.final_sum = nn.Linear(HIDDEN, 1, device=DEVICE)
+        if args.model_type == "transformer":
+            self.hidden.append(nn.TransformerEncoderLayer(d_model=input_size, nhead=1, dim_feedforward=HIDDEN, device=DEVICE))
+            for i in range(args.layers - 1):
+                self.hidden.append(nn.TransformerEncoderLayer(d_model=input_size, nhead=1, dim_feedforward=HIDDEN, device=DEVICE))
+            self.final_sum = nn.Linear(HIDDEN, 1, device=DEVICE)
 
     def forward(self, query, options, gold, lengths, query_no):
         if len(options) == 1:
@@ -465,38 +472,56 @@ class PyTorchModel(nn.Module):
             qvecs = self.pEmbedding(torch.tensor(query, device=DEVICE))
             qvec_max = torch.max(qvecs, 0)[0]
             qvec_mean = torch.mean(qvecs, 0)
-        for otext, features in options:
-            inputs = torch.tensor(features, device=DEVICE)
-            if args.word_vectors:
-                ovecs = self.pEmbedding(torch.tensor(otext, device=DEVICE))
-                ovec_max = torch.max(ovecs, 0)[0]
-                ovec_mean = torch.mean(ovecs, 0)
-                inputs = torch.cat((inputs, qvec_max, qvec_mean, ovec_max, ovec_mean))
-                
-            if args.drop > 0:
-                inputs = F.dropout(inputs, args.drop)
-            h = inputs
+        if args.model_type == "feedforward":
+            for otext, features in options:
+                inputs = torch.tensor(features, device=DEVICE)
+                if args.word_vectors:
+                    ovecs = self.pEmbedding(torch.tensor(otext, device=DEVICE))
+                    ovec_max = torch.max(ovecs, 0)[0]
+                    ovec_mean = torch.mean(ovecs, 0)
+                    inputs = torch.cat((inputs, qvec_max, qvec_mean, ovec_max, ovec_mean))
+                    
+                if args.drop > 0:
+                    inputs = F.dropout(inputs, args.drop)
+                h = inputs
+                for layer in self.hidden:
+                    h = layer(h)
+                    if args.nonlin == "linear":
+                        pass
+                    elif args.nonlin == "tanh":
+                        h = F.tanh(h)
+                    elif args.nonlin == "cube":
+                        h = h ** 3
+                    elif args.nonlin == "logistic":
+                        h = F.sigmoid(h)
+                    elif args.nonlin == "relu":
+                        h = F.relu(h)
+                    elif args.nonlin == "elu":
+                        h = F.elu(h)
+                    elif args.nonlin == "selu":
+                        h = F.selu(h)
+                    elif args.nonlin == "softsign":
+                        h = h / (1 + torch.abs(h))
+                    elif args.nonlin == "swish":
+                        h = h * F.sigmoid(h)
+                final.append(torch.sum(h, 0))
+        if args.model_type == "transformer":
+            transformer_input = []
+            for otext, features in options:
+                inputs = torch.tensor(features, device=DEVICE)
+                if args.word_vectors:
+                    ovecs = self.pEmbedding(torch.tensor(otext, device=DEVICE))
+                    ovec_max = torch.max(ovecs, 0)[0]
+                    ovec_mean = torch.mean(ovecs, 0)
+                    inputs = torch.cat((inputs, qvec_max, qvec_mean, ovec_max, ovec_mean))
+                transformer_input.append(inputs)
+            transformer_input = torch.stack(transformer_input)
+            h = transformer_input
             for layer in self.hidden:
                 h = layer(h)
-                if args.nonlin == "linear":
-                    pass
-                elif args.nonlin == "tanh":
-                    h = F.tanh(h)
-                elif args.nonlin == "cube":
-                    h = h ** 3
-                elif args.nonlin == "logistic":
-                    h = F.sigmoid(h)
-                elif args.nonlin == "relu":
-                    h = F.relu(h)
-                elif args.nonlin == "elu":
-                    h = F.elu(h)
-                elif args.nonlin == "selu":
-                    h = F.selu(h)
-                elif args.nonlin == "softsign":
-                    h = h / (1 + torch.abs(h))
-                elif args.nonlin == "swish":
-                    h = h * F.sigmoid(h)
-            final.append(torch.sum(h, 0))
+            for i in range(len(options)):
+                final.append(torch.sum(h[i], 0))
+
         final = torch.stack(final)
         nll = -F.log_softmax(final, dim=0)
         dense_gold = []
@@ -577,6 +602,7 @@ elif args.opt == 'adam':
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 nn.utils.clip_grad_norm_(model.parameters(), args.clip)
 
+from tqdm import tqdm
 
 prev_best = None
 if args.train:
@@ -592,7 +618,7 @@ if args.train:
         match = 0
         total = 0
         loss_steps = 0
-        for instance in train:
+        for instance in tqdm(train):
             step += 1
             ex_loss, matched, _ = do_instance(instance, True, model, optimizer)
             loss += ex_loss
