@@ -41,6 +41,7 @@ parser.add_argument('--batch-size', default=11, type=int, help="Batch size.")
 parser.add_argument('--report-freq', default=5000000, type=int, help="How frequently to evaluate on the development set.")
 parser.add_argument('--epochs', default=20, type=int, help="Maximum number of epochs.")
 parser.add_argument('--opt', choices=['sgd', 'adam'], default='sgd', help="Optimisation method.")
+
 parser.add_argument('--seed', default=10, type=int, help="Random seed.")
 parser.add_argument('--weight-decay', default=1e-7, type=float, help="Apply weight decay.")
 parser.add_argument('--learning-rate', default=0.018804, type=float, help="The initial learning rate.")
