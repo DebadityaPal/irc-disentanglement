@@ -37,7 +37,7 @@ parser.add_argument('--model_type', choices=["feedforward", "transformer"], defa
 parser.add_argument('--max-dist', default=101, type=int, help="Maximum number of messages to consider when forming a link (count includes the current message).")
 
 # Training arguments
-parser.add_argument('--batch-size', default=11, type=int, help="Batch size.")
+parser.add_argument('--batch_size', default=11, type=int, help="Batch size.")
 parser.add_argument('--report-freq', default=5000000, type=int, help="How frequently to evaluate on the development set.")
 parser.add_argument('--epochs', default=20, type=int, help="Maximum number of epochs.")
 parser.add_argument('--opt', choices=['sgd', 'adam'], default='sgd', help="Optimisation method.")
