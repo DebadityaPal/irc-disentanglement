@@ -37,9 +37,11 @@ parser.add_argument('--model_type', choices=["feedforward", "transformer"], defa
 parser.add_argument('--max-dist', default=101, type=int, help="Maximum number of messages to consider when forming a link (count includes the current message).")
 
 # Training arguments
-parser.add_argument('--report-freq', default=1000, type=int, help="How frequently to evaluate on the development set.")
+parser.add_argument('--batch-size', default=11, type=int, help="Batch size.")
+parser.add_argument('--report-freq', default=5000000, type=int, help="How frequently to evaluate on the development set.")
 parser.add_argument('--epochs', default=20, type=int, help="Maximum number of epochs.")
 parser.add_argument('--opt', choices=['sgd', 'adam'], default='sgd', help="Optimisation method.")
+
 parser.add_argument('--seed', default=10, type=int, help="Random seed.")
 parser.add_argument('--weight-decay', default=1e-7, type=float, help="Apply weight decay.")
 parser.add_argument('--learning-rate', default=0.018804, type=float, help="The initial learning rate.")
@@ -49,7 +51,8 @@ parser.add_argument('--drop', default=0.0, type=float, help="Dropout, applied to
 parser.add_argument('--clip', default=3.740, type=float, help="Gradient clipping.")
 
 args = parser.parse_args()
-
+BATCH_SIZE = args.batch_size
+DEV_BATCH_SIZE = 12
 WEIGHT_DECAY = args.weight_decay
 HIDDEN = args.hidden
 LEARNING_RATE = args.learning_rate
@@ -464,74 +467,57 @@ class PyTorchModel(nn.Module):
                 self.hidden.append(nn.TransformerEncoderLayer(d_model=input_size, nhead=1, dim_feedforward=HIDDEN, device=DEVICE))
             self.final_sum = nn.Linear(HIDDEN, 1, device=DEVICE)
 
-    def forward(self, query, options, gold, lengths, query_no):
-        if len(options) == 1:
-            return None, 0
-        final = []
+
+    def forward(self, batched_query, batched_options, batched_gold, batched_lengths, batched_query_no):
+        bad_options = []
+        for i in range(len(batched_options)):
+            if len(batched_options[i]) == 1:
+                bad_options.append(i)
+        
+        batched_final = []
         if args.word_vectors:
-            qvecs = self.pEmbedding(torch.tensor(query, device=DEVICE))
-            qvec_max = torch.max(qvecs, 0)[0]
-            qvec_mean = torch.mean(qvecs, 0)
+            batched_qvecs = []
+            for i in range(len(batched_query)):
+                qvecs = self.pEmbedding(torch.tensor(batched_query[i], device=DEVICE))
+                qvec_max = torch.max(qvecs, 0)[0]
+                qvec_mean = torch.mean(qvecs, 0)
+                batched_qvecs.append((qvec_max, qvec_mean))
         if args.model_type == "feedforward":
-            for otext, features in options:
-                inputs = torch.tensor(features, device=DEVICE)
-                if args.word_vectors:
-                    ovecs = self.pEmbedding(torch.tensor(otext, device=DEVICE))
-                    ovec_max = torch.max(ovecs, 0)[0]
-                    ovec_mean = torch.mean(ovecs, 0)
-                    inputs = torch.cat((inputs, qvec_max, qvec_mean, ovec_max, ovec_mean))
-                    
-                if args.drop > 0:
-                    inputs = F.dropout(inputs, args.drop)
-                h = inputs
-                for layer in self.hidden:
-                    h = layer(h)
-                    if args.nonlin == "linear":
-                        pass
-                    elif args.nonlin == "tanh":
-                        h = F.tanh(h)
-                    elif args.nonlin == "cube":
-                        h = h ** 3
-                    elif args.nonlin == "logistic":
-                        h = F.sigmoid(h)
-                    elif args.nonlin == "relu":
-                        h = F.relu(h)
-                    elif args.nonlin == "elu":
-                        h = F.elu(h)
-                    elif args.nonlin == "selu":
-                        h = F.selu(h)
-                    elif args.nonlin == "softsign":
-                        h = h / (1 + torch.abs(h))
-                    elif args.nonlin == "swish":
-                        h = h * F.sigmoid(h)
-                final.append(torch.sum(h, 0))
+            raise NotImplementedError
         if args.model_type == "transformer":
-            transformer_input = []
-            for otext, features in options:
-                inputs = torch.tensor(features, device=DEVICE)
-                if args.word_vectors:
-                    ovecs = self.pEmbedding(torch.tensor(otext, device=DEVICE))
-                    ovec_max = torch.max(ovecs, 0)[0]
-                    ovec_mean = torch.mean(ovecs, 0)
-                    inputs = torch.cat((inputs, qvec_max, qvec_mean, ovec_max, ovec_mean))
-                transformer_input.append(inputs)
-            transformer_input = torch.stack(transformer_input)
-            h = transformer_input
+            transformer_batched_input = []
+            for i in range(len(batched_options)):
+                for otext, features in batched_options[i]:
+                    inputs = torch.tensor(features, device=DEVICE)
+                    if args.word_vectors:
+                        ovecs = self.pEmbedding(torch.tensor(otext, device=DEVICE))
+                        ovec_max = torch.max(ovecs, 0)[0]
+                        ovec_mean = torch.mean(ovecs, 0)
+                        inputs = torch.cat((inputs, batched_qvecs[i][0], batched_qvecs[i][1], ovec_max, ovec_mean))
+                    transformer_batched_input.append(inputs)
+            transformer_batched_input = torch.stack(transformer_batched_input)
+            h = transformer_batched_input
             for layer in self.hidden:
                 h = layer(h)
-            for i in range(len(options)):
-                final.append(torch.sum(h[i], 0))
-
-        final = torch.stack(final)
-        nll = -F.log_softmax(final, dim=0)
-        dense_gold = []
-        for i in range(len(options)):
-            dense_gold.append(1.0 / len(gold) if i in gold else 0.0)
-        answer = torch.tensor(dense_gold, device=DEVICE)
-        loss = torch.dot(answer, nll)
-        predicted_link = torch.argmax(final)
-        return loss, predicted_link
-        
+            start = 0
+            for i in range(len(batched_options)):
+                end = start + len(batched_options[i])
+                final = torch.sum(h[start:end], 1)
+                batched_final.append(final)
+                start = end
+            
+            batched_final = torch.stack(batched_final)
+            nll = -F.log_softmax(batched_final, dim=1)
+            dense_gold = []
+            for i in range(len(batched_options)):
+                dense_gold.append([1.0 / len(batched_gold[i]) if j in batched_gold[i] else 0.0 for j in range(len(batched_options[i]))])
+            answer = torch.tensor(dense_gold, device=DEVICE)
+            # Batchwise dot product
+            dot = torch.bmm(answer.unsqueeze(1), nll.unsqueeze(2))
+            loss = torch.sum(dot)
+            predicted_link = torch.argmax(batched_final, dim=0)
+            return loss, predicted_link
+       
     def get_ids(self, words):
         ans = []
         backup = self.token_to_id.get('<unka>', 0)
@@ -572,6 +558,54 @@ def do_instance(instance, train, model, optimizer, do_cache=True):
     predicted = output
     matched = (predicted in gold)
 
+    return loss, matched, predicted
+
+def do_batched_instance(instances, train, model, optimizer, do_cache=True):
+    batched_query_tok = []
+    batched_options = []
+    batched_gold = []
+    batched_lengths = []
+    batched_query= []
+
+    for instance in instances:
+        name, query, gold, text_ascii, text_tok, info, target_info = instance
+        
+        # Skip cases if we can't represent them
+        gold = [v for v in gold if v > query - MAX_DIST]
+        if len(gold) == 0 and train:
+            return 0, False, query
+        
+        # Get features
+        options = []
+        query_ascii = text_ascii[query]
+        query_tok = model.get_ids(text_tok[query])
+        for i in range(query, max(-1, query - MAX_DIST), -1):
+            option_ascii = text_ascii[i]
+            option_tok = model.get_ids(text_tok[i])
+            features = get_features(name, query, i, text_ascii, text_tok, info, target_info, do_cache)
+            options.append((option_tok, features))
+        gold = [query - v for v in gold]
+        lengths = [len(sent) for sent in options]
+
+        batched_query_tok.append(query_tok)
+        batched_options.append(options)
+        batched_gold.append(gold)
+        batched_lengths.append(lengths)
+        batched_query.append(query)
+
+    # Run computation
+    example_loss, output = model(batched_query_tok, batched_options, batched_gold, batched_lengths, batched_query)
+    loss = 0.0
+    if train and example_loss is not None:
+        example_loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
+        loss = example_loss.item()
+    predicted = output
+    matched = []
+    for i in range(len(instances)):
+        matched.append(predicted[i] in batched_gold[i])
+    
     return loss, matched, predicted
 
 ###############################################################################
@@ -618,25 +652,34 @@ if args.train:
         match = 0
         total = 0
         loss_steps = 0
-        for instance in tqdm(train):
+    
+        for ibatch in tqdm(range(0, len(train), BATCH_SIZE)):
+            if ibatch + BATCH_SIZE > len(train):
+                instance = train[ibatch:]
+            else:
+                instance = train[ibatch:ibatch+BATCH_SIZE]
             step += 1
-            ex_loss, matched, _ = do_instance(instance, True, model, optimizer)
+            ex_loss, matched, _ = do_batched_instance(instance, True, model, optimizer)
             loss += ex_loss
             loss_steps += 1
             if matched:
-                match += 1
-            total += len(instance[2])
+                match += matched.count(True)
+            total += BATCH_SIZE
 
             # Partial results
             if step % args.report_freq == 0:
                 # Dev pass
                 dev_match = 0
                 dev_total = 0
-                for dinstance in dev:
-                    _, matched, _ = do_instance(dinstance, False, model, optimizer)
-                    if matched:
-                        dev_match += 1
-                    dev_total += len(dinstance[2])
+
+                for dbatch in tqdm(range(0, len(dev), DEV_BATCH_SIZE)):
+                    if dbatch + DEV_BATCH_SIZE > len(dev):
+                        dinstance = dev[dbatch:]
+                    else:
+                        dinstance = dev[dbatch:dbatch+DEV_BATCH_SIZE]
+                    _, matched, _ = do_batched_instance(dinstance, False, model, optimizer)
+                    dev_match += sum(matched)
+                    dev_total += len(dinstance)
 
                 tacc = match / total
                 dacc = dev_match / dev_total
