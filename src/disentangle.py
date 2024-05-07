@@ -37,9 +37,9 @@ parser.add_argument('--model_type', choices=["feedforward", "transformer"], defa
 parser.add_argument('--max-dist', default=101, type=int, help="Maximum number of messages to consider when forming a link (count includes the current message).")
 
 # Training arguments
-parser.add_argument('--report-freq', default=5000, type=int, help="How frequently to evaluate on the development set.")
+parser.add_argument('--report-freq', default=1000, type=int, help="How frequently to evaluate on the development set.")
 parser.add_argument('--epochs', default=20, type=int, help="Maximum number of epochs.")
-parser.add_argument('--opt', choices=['sgd', 'mom'], default='sgd', help="Optimisation method.")
+parser.add_argument('--opt', choices=['sgd', 'adam'], default='sgd', help="Optimisation method.")
 parser.add_argument('--seed', default=10, type=int, help="Random seed.")
 parser.add_argument('--weight-decay', default=1e-7, type=float, help="Apply weight decay.")
 parser.add_argument('--learning-rate', default=0.018804, type=float, help="The initial learning rate.")
