@@ -515,7 +515,7 @@ class PyTorchModel(nn.Module):
             # Batchwise dot product
             dot = torch.bmm(answer.unsqueeze(1), nll.unsqueeze(2))
             loss = torch.sum(dot)
-            predicted_link = torch.argmax(batched_final, dim=0)
+            predicted_link = torch.argmax(batched_final, dim=1)
             return loss, predicted_link
        
     def get_ids(self, words):
